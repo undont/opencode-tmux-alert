@@ -23,11 +23,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/seanhalberthal/opencode-tmux-alert.git"
+    "url": "git+https://github.com/undont/opencode-tmux-alert.git"
   },
-  "homepage": "https://github.com/seanhalberthal/opencode-tmux-alert",
+  "homepage": "https://github.com/undont/opencode-tmux-alert",
   "bugs": {
-    "url": "https://github.com/seanhalberthal/opencode-tmux-alert/issues"
+    "url": "https://github.com/undont/opencode-tmux-alert/issues"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.2.10"
