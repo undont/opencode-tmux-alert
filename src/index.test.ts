@@ -1,27 +1,17 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test"
-import { TmuxAlertPlugin } from "./index"
+import { actionFor, setupTmuxAlert } from "./index"
 
-// --- Mock shell helper ---
+// --- Mock event stream ---
 
-function createMockShell() {
-  const calls: string[] = []
-  const mock$ = (strings: TemplateStringsArray, ...expressions: unknown[]) => {
-    let command = ""
-    strings.forEach((str, i) => {
-      command += str
-      if (i < expressions.length) command += String(expressions[i])
-    })
-    calls.push(command.trim())
-    return Promise.resolve()
+function createMockCtx(events: unknown[]) {
+  const subscribe = async function* () {
+    for (const event of events) yield event
   }
-  return { $: mock$ as any, calls }
+  return { event: { subscribe: () => subscribe() } } as any
 }
 
-function createThrowingShell() {
-  const mock$ = () => {
-    return Promise.reject(new Error("shell execution failed"))
-  }
-  return { $: mock$ as any }
+async function flush() {
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 // --- Environment variable isolation ---
@@ -62,206 +52,153 @@ afterEach(() => {
 // --- Tests ---
 
 describe("TMUX guard", () => {
-  test("returns empty object when TMUX is not set", async () => {
+  test("runs nothing when TMUX is not set", async () => {
     delete process.env.TMUX
-    const { calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $: createMockShell().$ } as any)
-    expect(result).toEqual({})
-    expect(calls).toHaveLength(0)
-  })
-
-  test("logs error message when not in tmux", async () => {
-    delete process.env.TMUX
+    const calls: string[] = []
     const spy = spyOn(console, "error").mockImplementation(() => {})
-    await TmuxAlertPlugin({ $: createMockShell().$ } as any)
+    const cleanup = await setupTmuxAlert(
+      createMockCtx([{ type: "session.idle" }]),
+      async (command) => {
+        calls.push(command)
+      },
+    )
+    await flush()
+    expect(cleanup).toBeUndefined()
+    expect(calls).toHaveLength(0)
     expect(spy).toHaveBeenCalledWith(
-      "[opencode-tmux-alert] Not running inside tmux — plugin disabled",
+      "[opencode-tmux-alert] Not running inside tmux, plugin disabled",
     )
     spy.mockRestore()
   })
 
-  test("returns hooks with event handler when TMUX is set", async () => {
-    const { $ } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    expect(result).toHaveProperty("event")
-    expect(typeof result.event).toBe("function")
+  test("returns a cleanup function when TMUX is set", async () => {
+    const cleanup = await setupTmuxAlert(createMockCtx([]), async () => {})
+    expect(typeof cleanup).toBe("function")
+    cleanup!()
   })
 })
 
 describe("Script path resolution", () => {
   test("uses bundled alert.sh by default", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "session.idle" } } as any)
+    const calls: string[] = []
+    await setupTmuxAlert(createMockCtx([{ type: "session.idle" }]), async (c) => {
+      calls.push(c)
+    })
+    await flush()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatch(/scripts\/alert\.sh$/)
   })
 
   test("uses bundled clear.sh by default", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.updated",
-        properties: { info: { role: "user" } },
+    const calls: string[] = []
+    await setupTmuxAlert(
+      createMockCtx([{ type: "session.inbox.enqueued", data: { item: { type: "user" } } }]),
+      async (c) => {
+        calls.push(c)
       },
-    } as any)
+    )
+    await flush()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatch(/scripts\/clear\.sh$/)
   })
 
   test("uses OPENCODE_ALERT_SCRIPT env var when set", async () => {
     process.env.OPENCODE_ALERT_SCRIPT = "/custom/alert.sh"
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "session.idle" } } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toBe("/custom/alert.sh")
+    const calls: string[] = []
+    await setupTmuxAlert(createMockCtx([{ type: "session.idle" }]), async (c) => {
+      calls.push(c)
+    })
+    await flush()
+    expect(calls).toEqual(["/custom/alert.sh"])
   })
 
   test("uses OPENCODE_CLEAR_SCRIPT env var when set", async () => {
     process.env.OPENCODE_CLEAR_SCRIPT = "/custom/clear.sh"
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.updated",
-        properties: { info: { role: "user" } },
+    const calls: string[] = []
+    await setupTmuxAlert(
+      createMockCtx([{ type: "session.inbox.enqueued", data: { item: { type: "user" } } }]),
+      async (c) => {
+        calls.push(c)
       },
-    } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toBe("/custom/clear.sh")
+    )
+    await flush()
+    expect(calls).toEqual(["/custom/clear.sh"])
   })
 })
 
-describe("Alert event routing", () => {
-  test("session.idle triggers alert script", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "session.idle" } } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/alert\.sh$/)
+describe("Event routing", () => {
+  test("session.idle maps to alert", () => {
+    expect(actionFor({ type: "session.idle" })).toBe("alert")
   })
 
-  test("permission.updated triggers alert script", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "permission.updated" } } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/alert\.sh$/)
+  test("permission.asked maps to alert", () => {
+    expect(actionFor({ type: "permission.asked" })).toBe("alert")
   })
 
-  test("message.part.updated with tool type and pending status triggers alert script", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.part.updated",
-        properties: {
-          part: { type: "tool", state: { status: "pending" } },
-        },
-      },
-    } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/alert\.sh$/)
+  test("tui.prompt.append maps to alert", () => {
+    expect(actionFor({ type: "tui.prompt.append" })).toBe("alert")
   })
 
-  test("tui.prompt.append triggers alert script", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "tui.prompt.append" } } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/alert\.sh$/)
+  test("session.tool.called awaiting approval maps to alert", () => {
+    expect(
+      actionFor({ type: "session.tool.called", data: { executed: false } }),
+    ).toBe("alert")
   })
-})
 
-describe("Clear event routing", () => {
-  test("message.updated with user role triggers clear script", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.updated",
-        properties: { info: { role: "user" } },
-      },
-    } as any)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatch(/clear\.sh$/)
+  test("user inbox item maps to clear", () => {
+    expect(
+      actionFor({ type: "session.inbox.enqueued", data: { item: { type: "user" } } }),
+    ).toBe("clear")
   })
 })
 
 describe("Negative cases", () => {
-  test("message.part.updated with tool type and running status does NOT trigger alert", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.part.updated",
-        properties: {
-          part: { type: "tool", state: { status: "running" } },
-        },
-      },
-    } as any)
-    expect(calls).toHaveLength(0)
+  test("session.tool.called that already executed does NOT alert", () => {
+    expect(
+      actionFor({ type: "session.tool.called", data: { executed: true } }),
+    ).toBeUndefined()
   })
 
-  test("message.part.updated with non-tool part type does NOT trigger alert", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.part.updated",
-        properties: {
-          part: { type: "text", state: { status: "pending" } },
-        },
-      },
-    } as any)
-    expect(calls).toHaveLength(0)
+  test("non-user inbox item does NOT clear", () => {
+    expect(
+      actionFor({ type: "session.inbox.enqueued", data: { item: { type: "synthetic" } } }),
+    ).toBeUndefined()
   })
 
-  test("message.updated with assistant role does NOT trigger alert or clear", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: {
-        type: "message.updated",
-        properties: { info: { role: "assistant" } },
-      },
-    } as any)
-    expect(calls).toHaveLength(0)
+  test("unhandled event type triggers neither alert nor clear", () => {
+    expect(actionFor({ type: "some.unknown.event" })).toBeUndefined()
   })
 
-  test("unhandled event type triggers neither alert nor clear", async () => {
-    const { $, calls } = createMockShell()
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({
-      event: { type: "some.unknown.event" },
-    } as any)
+  test("unhandled events run no scripts", async () => {
+    const calls: string[] = []
+    await setupTmuxAlert(
+      createMockCtx([{ type: "some.unknown.event" }, { type: "message.updated" }]),
+      async (c) => {
+        calls.push(c)
+      },
+    )
+    await flush()
     expect(calls).toHaveLength(0)
   })
 })
 
 describe("Error handling", () => {
-  test("shell error is caught and logged to console.error", async () => {
-    const { $ } = createThrowingShell()
+  test("script failure is caught and logged, and the loop keeps going", async () => {
     const spy = spyOn(console, "error").mockImplementation(() => {})
-    const result = await TmuxAlertPlugin({ $ } as any)
-    await result.event!({ event: { type: "session.idle" } } as any)
+    const calls: string[] = []
+    await setupTmuxAlert(
+      createMockCtx([{ type: "session.idle" }, { type: "tui.prompt.append" }]),
+      async (c) => {
+        calls.push(c)
+        throw new Error("shell execution failed")
+      },
+    )
+    await flush()
+    expect(calls).toHaveLength(2)
     expect(spy).toHaveBeenCalledWith(
       "[opencode-tmux-alert] Error:",
       expect.any(Error),
     )
-    spy.mockRestore()
-  })
-
-  test("event handler resolves even when shell throws", async () => {
-    const { $ } = createThrowingShell()
-    const spy = spyOn(console, "error").mockImplementation(() => {})
-    const result = await TmuxAlertPlugin({ $ } as any)
-    // Should not reject
-    await expect(
-      result.event!({ event: { type: "session.idle" } } as any),
-    ).resolves.toBeUndefined()
     spy.mockRestore()
   })
 })
