@@ -28,17 +28,11 @@ Then add the plugin to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-tmux-alert"]
+  "plugins": ["opencode-tmux-alert"]
 }
 ```
 
-### Local file
-
-Copy `src/index.ts` into your OpenCode plugins directory:
-
-```bash
-cp src/index.ts ~/.config/opencode/plugins/opencode-tmux-alert.ts
-```
+Requires OpenCode V2. For OpenCode V1, pin `opencode-tmux-alert@0.1.1` and use the `plugin` key instead.
 
 ---
 
@@ -60,10 +54,10 @@ This means alerts work out of the box with a standard tmux config, and can be fu
 | Event | Trigger | Action |
 |-------|---------|--------|
 | `session.idle` | Task completed, agent waiting | Alert |
-| `permission.updated` | Agent needs permission to proceed | Alert |
-| `message.part.updated` | Tool pending approval | Alert |
+| `permission.asked` | Agent needs permission to proceed | Alert |
+| `session.tool.called` (not executed) | Tool pending approval | Alert |
 | `tui.prompt.append` | Agent asking a question | Alert |
-| `message.updated` (user) | User submits a message | Clear |
+| `session.inbox.enqueued` (user) | User submits a message | Clear |
 
 ---
 
@@ -102,7 +96,7 @@ set -g visual-bell off    # optional — suppress the visual flash
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai) with plugin support
+- [OpenCode](https://opencode.ai) V2
 - [tmux](https://github.com/tmux/tmux) — the plugin disables itself gracefully if not running inside tmux
 
 ---

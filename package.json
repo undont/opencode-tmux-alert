@@ -30,7 +30,7 @@
     "url": "https://github.com/undont/opencode-tmux-alert/issues"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.2.10"
+    "@opencode/plugin": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
