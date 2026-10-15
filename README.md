@@ -2,7 +2,7 @@
 
 # opencode-tmux-alert
 
-**Tmux alert plugin for [OpenCode](https://opencode.ai) — get notified when your AI agent needs attention.**
+**Tmux alert plugin for [OpenCode](https://opencode.ai). Get notified when your AI agent needs attention.**
 
 [![npm](https://img.shields.io/npm/v/opencode-tmux-alert?style=flat&logo=npm)](https://www.npmjs.com/package/opencode-tmux-alert)
 [![Licence](https://img.shields.io/github/license/undont/opencode-tmux-alert?style=flat&label=licence)](LICENCE)
@@ -32,13 +32,13 @@ Then add the plugin to your `opencode.json`:
 }
 ```
 
-Requires OpenCode V2. For OpenCode V1, pin `opencode-tmux-alert@0.1.1` and use the `plugin` key instead.
+Requires OpenCode V2.
 
 ---
 
 ## How It Works
 
-When OpenCode needs your attention — a task finishes, a permission is requested, or a question is asked — the plugin triggers a tmux alert on the current window. When you respond, the alert clears automatically.
+When OpenCode needs your attention (a task finishes, a permission is requested, or a question is asked), the plugin triggers a tmux alert on the current window. When you respond, the alert clears automatically.
 
 The bundled scripts do two things:
 
@@ -68,7 +68,7 @@ This means alerts work out of the box with a standard tmux config, and can be fu
 Use the `@opencode-alert` user option in your tmux status format to show a visual indicator:
 
 ```bash
-# In tmux.conf — show an indicator when OpenCode needs attention
+# In tmux.conf, show an indicator when OpenCode needs attention
 set -g status-right "#{?@opencode-alert,#[fg=yellow] OpenCode,} ..."
 ```
 
@@ -89,7 +89,7 @@ To use the bell-based alerts, enable monitoring in your `tmux.conf`:
 
 ```bash
 set -g monitor-bell on
-set -g visual-bell off    # optional — suppress the visual flash
+set -g visual-bell off    # optional, suppress the visual flash
 ```
 
 ---
@@ -97,7 +97,7 @@ set -g visual-bell off    # optional — suppress the visual flash
 ## Requirements
 
 - [OpenCode](https://opencode.ai) V2
-- [tmux](https://github.com/tmux/tmux) — the plugin disables itself gracefully if not running inside tmux
+- [tmux](https://github.com/tmux/tmux) (the plugin disables itself gracefully if not running inside tmux)
 
 ---
 
