@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createStateMonitor, type StateChange } from "./state";
 import { createTracker, type Action, type Sessions } from "./tracker";
 
 const execFileAsync = promisify(execFile);
@@ -13,7 +14,7 @@ export type Run = (
   env: Record<string, string>
 ) => Promise<unknown>;
 
-type Host = Pick<Plugin.Context, "options" | "data" | "ui">;
+type Host = Pick<Plugin.Context, "options" | "location" | "data" | "ui">;
 
 const defaultRun: Run = (script, env) =>
   execFileAsync(script, [], {
@@ -34,7 +35,8 @@ export function expandHome(path: string): string {
 
 /**
  * Script precedence: plugin options in cli.json, then the environment, then
- * the bundled scripts shipped next to dist/.
+ * the bundled scripts shipped next to dist/. `stateScript: false` turns state
+ * reporting off.
  */
 export function resolveScripts(options: Readonly<Record<string, any>>) {
   const scriptsDir = resolve(
@@ -55,7 +57,15 @@ export function resolveScripts(options: Readonly<Record<string, any>>) {
       options.clearScript,
       process.env.OPENCODE_CLEAR_SCRIPT,
       "clear.sh"
-    )
+    ),
+    state:
+      options.stateScript === false
+        ? undefined
+        : pick(
+            options.stateScript,
+            process.env.OPENCODE_STATE_SCRIPT,
+            "state.sh"
+          )
   };
 }
 
@@ -90,6 +100,23 @@ export function sessionsFor(context: Host): Sessions & { observe(): void } {
   };
 }
 
+// a TUI started on (or resumed into) a running session should report working
+function initialRunning(context: Host): string[] {
+  const route = context.ui.router.current();
+  if (route.type !== "session") return [];
+  const root = context.data.session.root(route.sessionID);
+  return context.data.session.status(root) === "running" ? [root] : [];
+}
+
+function directoryFor(context: Host, sessionID: string | undefined): string {
+  const session = sessionID ? context.data.session.get(sessionID) : undefined;
+  return (
+    session?.location?.directory ??
+    context.location?.directory ??
+    context.data.location.default().directory
+  );
+}
+
 export function setupTmuxAlert(context: Host, run: Run = defaultRun) {
   // outside tmux there is no window to alert; stay silent rather than toast
   // on every launch
@@ -101,18 +128,8 @@ export function setupTmuxAlert(context: Host, run: Run = defaultRun) {
   let queue: Promise<void> = Promise.resolve();
   let warned = false;
 
-  // serialised so an alert and its clear can't reach tmux out of order
-  const perform = (action: Action) => {
-    const [script, env] =
-      action.type === "alert"
-        ? [
-            scripts.alert,
-            {
-              OPENCODE_ALERT_REASON: action.reason,
-              OPENCODE_SESSION_ID: action.sessionID
-            }
-          ]
-        : [scripts.clear, {}];
+  // serialised so script runs reach tmux and the state consumer in event order
+  const enqueue = (script: string, env: Record<string, string>) => {
     queue = queue
       .then(() => run(script, env))
       .then(
@@ -123,7 +140,7 @@ export function setupTmuxAlert(context: Host, run: Run = defaultRun) {
           warned = true;
           context.ui.toast.show({
             title: "opencode-tmux-alert",
-            message: `Alert script failed: ${error instanceof Error ? error.message : String(error)}`,
+            message: `Script failed: ${error instanceof Error ? error.message : String(error)}`,
             variant: "warning"
           });
         }
@@ -131,16 +148,54 @@ export function setupTmuxAlert(context: Host, run: Run = defaultRun) {
     return queue;
   };
 
+  const alert = (action: Action) =>
+    action.type === "alert"
+      ? enqueue(scripts.alert, {
+          OPENCODE_ALERT_REASON: action.reason,
+          OPENCODE_SESSION_ID: action.sessionID
+        })
+      : enqueue(scripts.clear, {});
+
+  const stateScript = scripts.state;
+  const report = (change: StateChange) => {
+    if (!stateScript) return queue;
+    return enqueue(stateScript, {
+      OPENCODE_AGENT_STATE: change.state,
+      OPENCODE_STATE_EVENT: change.event,
+      OPENCODE_SESSION_ID: change.sessionID ?? "",
+      OPENCODE_DIRECTORY: directoryFor(context, change.sessionID)
+    });
+  };
+
+  const monitor = stateScript
+    ? createStateMonitor(
+        sessions,
+        tracker.inputPending,
+        initialRunning(context)
+      )
+    : undefined;
+  if (monitor) void report(monitor.snapshot("setup"));
+
   const stop = context.data.listen(({ details }) => {
     sessions.observe();
     const action = tracker.handle(details);
-    if (action) void perform(action);
+    if (action) void alert(action);
+    const change = monitor?.handle(details);
+    if (change) void report(change);
   });
 
   return async () => {
     stop();
-    // don't leave the window flagged after OpenCode exits or the plugin reloads
-    if (tracker.active()) await perform({ type: "clear" });
+    // don't leave the window flagged or the state reported after OpenCode
+    // exits or the plugin reloads
+    if (tracker.active()) void alert({ type: "clear" });
+    if (monitor)
+      void report({
+        state: "ended",
+        sessionID: monitor.sessionID(),
+        event: "cleanup"
+      });
+    await queue;
   };
 }
 

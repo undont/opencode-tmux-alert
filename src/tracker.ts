@@ -121,6 +121,9 @@ export function createTracker(sessions: Sessions) {
   return {
     handle,
     /** True while anything is pending, i.e. the window alert should be on */
-    active: () => pending.size > 0
+    active: () => pending.size > 0,
+    /** True while a permission request or question is unanswered */
+    inputPending: () =>
+      [...pending.keys()].some((key) => !key.startsWith("done:"))
   };
 }

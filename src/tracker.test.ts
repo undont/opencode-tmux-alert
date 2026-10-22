@@ -194,3 +194,17 @@ describe("ignored events", () => {
     expect(tracker.active()).toBe(false);
   });
 });
+
+describe("inputPending", () => {
+  test("tracks unanswered permissions and forms, not finished turns", () => {
+    const tracker = createTracker(sessions());
+    tracker.handle(execution("succeeded"));
+    expect(tracker.inputPending()).toBe(false);
+    tracker.handle(asked("per_1"));
+    expect(tracker.inputPending()).toBe(true);
+    tracker.handle(replied("per_1"));
+    expect(tracker.inputPending()).toBe(false);
+    tracker.handle(form("frm_1"));
+    expect(tracker.inputPending()).toBe(true);
+  });
+});

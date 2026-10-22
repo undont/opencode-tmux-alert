@@ -10,6 +10,7 @@ function createHost(
     route?: Route;
     tabs?: string[];
     parents?: Record<string, string>;
+    running?: string[];
     options?: Record<string, unknown>;
   } = {}
 ) {
@@ -19,8 +20,12 @@ function createHost(
     route: opts.route ?? { type: "session", sessionID: "ses_mine" }
   };
   const parents = opts.parents ?? {};
+  const running = new Set(opts.running ?? []);
   const host = {
-    options: opts.options ?? {},
+    // state reporting is on by default; tests opt in explicitly so alert/clear
+    // run counts stay exact
+    options: { stateScript: false, ...opts.options },
+    location: { directory: "/work/project" },
     data: {
       listen: (handler: (event: { details: any }) => void) => {
         listeners.add(handler);
@@ -28,8 +33,14 @@ function createHost(
       },
       session: {
         root: (id: string) => parents[id] ?? id,
-        get: (id: string) => ({ id, parentID: parents[id] })
-      }
+        get: (id: string) => ({
+          id,
+          parentID: parents[id],
+          location: { directory: `/work/${id}` }
+        }),
+        status: (id: string) => (running.has(id) ? "running" : "idle")
+      },
+      location: { default: () => ({ directory: "/work/default" }) }
     },
     ui: {
       router: { current: () => state.route },
@@ -75,7 +86,8 @@ const ENV = [
   "TMUX",
   "TMUX_PANE",
   "OPENCODE_ALERT_SCRIPT",
-  "OPENCODE_CLEAR_SCRIPT"
+  "OPENCODE_CLEAR_SCRIPT",
+  "OPENCODE_STATE_SCRIPT"
 ] as const;
 let saved: Partial<Record<(typeof ENV)[number], string>> = {};
 
@@ -85,6 +97,7 @@ beforeEach(() => {
   process.env.TMUX_PANE = "%1";
   delete process.env.OPENCODE_ALERT_SCRIPT;
   delete process.env.OPENCODE_CLEAR_SCRIPT;
+  delete process.env.OPENCODE_STATE_SCRIPT;
 });
 
 afterEach(() => {
@@ -279,5 +292,121 @@ describe("cleanup", () => {
     const cleanup = setupTmuxAlert(host, run)!;
     await cleanup();
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("state script", () => {
+  const stateRuns = (
+    calls: { script: string; env: Record<string, string> }[]
+  ) =>
+    calls.filter((call) => call.script === "/state.sh").map((call) => call.env);
+
+  test("stateScript: false runs no state script", async () => {
+    const { host, emit } = createHost();
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    emit({
+      type: "session.execution.started",
+      data: { sessionID: "ses_mine" }
+    });
+    await flush();
+    expect(calls).toHaveLength(0);
+  });
+
+  test("runs the bundled state.sh by default", async () => {
+    const { host } = createHost({ options: { stateScript: undefined } });
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].script).toMatch(/scripts\/state\.sh$/);
+  });
+
+  test("the environment overrides the bundled script", async () => {
+    process.env.OPENCODE_STATE_SCRIPT = "/env/state.sh";
+    const { host } = createHost({ options: { stateScript: undefined } });
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    await flush();
+    expect(calls.map((call) => call.script)).toEqual(["/env/state.sh"]);
+  });
+
+  test("option beats the environment and expands ~", async () => {
+    process.env.OPENCODE_STATE_SCRIPT = "/env/state.sh";
+    const { host } = createHost({ options: { stateScript: "~/opt/state.sh" } });
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    await flush();
+    expect(calls.map((call) => call.script)).toEqual([
+      join(homedir(), "opt/state.sh")
+    ]);
+  });
+
+  test.each([
+    [[], "idle"],
+    [["ses_mine"], "working"]
+  ])("running %p reports %s at setup", async (running, expected) => {
+    const { host } = createHost({
+      running,
+      options: { stateScript: "/state.sh" }
+    });
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    await flush();
+    expect(stateRuns(calls)[0]).toMatchObject({
+      OPENCODE_AGENT_STATE: expected,
+      OPENCODE_STATE_EVENT: "setup"
+    });
+  });
+
+  test("reports each change through a turn", async () => {
+    const { host, emit } = createHost({
+      options: { stateScript: "/state.sh" }
+    });
+    const { calls, run } = recorder();
+    setupTmuxAlert(host, run);
+    emit({
+      type: "session.execution.started",
+      data: { sessionID: "ses_mine" }
+    });
+    emit(asked("per_1"));
+    emit(replied("per_1"));
+    emit({
+      type: "session.execution.succeeded",
+      data: { sessionID: "ses_mine" }
+    });
+    await flush();
+    expect(stateRuns(calls).map((env) => env.OPENCODE_AGENT_STATE)).toEqual([
+      "idle",
+      "working",
+      "needs-input",
+      "working",
+      "idle"
+    ]);
+    expect(stateRuns(calls)[1]).toEqual({
+      OPENCODE_AGENT_STATE: "working",
+      OPENCODE_STATE_EVENT: "session.execution.started",
+      OPENCODE_SESSION_ID: "ses_mine",
+      OPENCODE_DIRECTORY: "/work/ses_mine"
+    });
+  });
+
+  test("cleanup reports ended after the final clear", async () => {
+    const { host, emit } = createHost({
+      options: { stateScript: "/state.sh" }
+    });
+    const { calls, run } = recorder();
+    const cleanup = setupTmuxAlert(host, run)!;
+    emit(asked("per_1"));
+    await cleanup();
+    const tail = calls.slice(-2);
+    expect(tail[0].script).toMatch(/clear\.sh$/);
+    expect(tail[1]).toEqual({
+      script: "/state.sh",
+      env: expect.objectContaining({
+        OPENCODE_AGENT_STATE: "ended",
+        OPENCODE_STATE_EVENT: "cleanup"
+      })
+    });
   });
 });
