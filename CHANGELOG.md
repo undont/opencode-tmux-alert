@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Each OpenCode's state (`working`, `needs-input`, `idle`, `error`) is recorded on its tmux window as `@opencode-state`, for window status formats
+- `stateScript` option and `OPENCODE_STATE_SCRIPT` to run your own script on state changes. Set `"stateScript": false` to turn state reporting off
+
+## [2.0.0] - 2026-10-22
+
 ### Changed
 - **Breaking:** runs as an OpenCode V2 CLI plugin. Move `opencode-tmux-alert` from `plugins` in `opencode.json` to `plugins` in `cli.json`. The server plugin sent every alert to whichever tmux window started the OpenCode background service
 - Requires OpenCode V2.1 or newer
